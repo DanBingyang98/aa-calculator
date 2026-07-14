@@ -117,8 +117,16 @@
 // Core — AA calculator (JS port of aa_core Python package)
 // =========================================================================
 
-function r2(n) {
-  return Math.round(n * 100) / 100;
+var EPSILON = 0.01;  // 对齐 Python: Decimal('0.01')
+
+function roundCents(n) {
+  // ROUND_HALF_UP: handle negative numbers symmetrically (align with Python)
+  var sign = n >= 0 ? 1 : -1;
+  return sign * Math.round(Math.abs(n) * 100) / 100;
+}
+
+function formatYuan(n) {
+  return '¥' + n.toFixed(2);
 }
 
 // ---- Parser -------------------------------------------------------------
@@ -126,13 +134,15 @@ function r2(n) {
 var EXPENSE_RE = /^(\d+(?:\.\d{1,2})?)\s+(\S.*)/;
 var MENTION_RE = /@(\S+)/g;
 
+// WeChat @全员 → treated as "all participants" (null sharedBy)
+var ALL_MENTION = '全员';
+
 function parseChat(text) {
   var lines = text.trim().split('\n')
     .map(function(l) { return l.trim(); })
     .filter(function(l) { return l.length > 0; });
 
   var eventName = '';
-  var entries = [];
   var expenses = [];
   var currentSpeaker = '';
   var participantSet = {};
@@ -147,15 +157,15 @@ function parseChat(text) {
     // Expense line: "amount description [@...]"
     var m = line.match(EXPENSE_RE);
     if (m) {
-      var amount = r2(parseFloat(m[1]));
+      var amount = roundCents(parseFloat(m[1]));
       var rest = m[2];
 
-      // Extract @mentions
+      // Extract @mentions, filter out @全员 (treated as everyone)
       var mentions = [];
       var mm;
       MENTION_RE.lastIndex = 0;
       while ((mm = MENTION_RE.exec(rest)) !== null) {
-        mentions.push(mm[1]);
+        if (mm[1] !== ALL_MENTION) mentions.push(mm[1]);
       }
       var description = rest.replace(MENTION_RE, '').trim();
 
@@ -163,12 +173,6 @@ function parseChat(text) {
         mentions.forEach(function(name) { participantSet[name] = true; });
         participantSet[currentSpeaker] = true;
 
-        entries.push({
-          speaker: currentSpeaker,
-          amount: amount,
-          description: description,
-          mentions: mentions
-        });
         expenses.push({
           payer: currentSpeaker,
           amount: amount,
@@ -187,7 +191,6 @@ function parseChat(text) {
   return {
     eventName: eventName,
     participants: Object.keys(participantSet).sort(),
-    entries: entries,
     expenses: expenses
   };
 }
@@ -213,7 +216,7 @@ function calculate(settlement) {
     paid[exp.payer] += exp.amount;
 
     var sharers = exp.sharedBy !== null ? exp.sharedBy : participants;
-    var perPerson = r2(exp.amount / sharers.length);
+    var perPerson = roundCents(exp.amount / sharers.length);
     sharers.forEach(function(p) {
       share[p] += perPerson;
     });
@@ -225,9 +228,9 @@ function calculate(settlement) {
   participants.forEach(function(p) {
     var b = {
       person: p,
-      paid: r2(paid[p]),
-      share: r2(share[p]),
-      net: r2(paid[p] - share[p])
+      paid: roundCents(paid[p]),
+      share: roundCents(share[p]),
+      net: roundCents(paid[p] - share[p])
     };
     balances.push(b);
     net[p] = b.net;
@@ -238,8 +241,8 @@ function calculate(settlement) {
   var creditors = [];
   var debtors = [];
   participants.forEach(function(p) {
-    if (net[p] > 0.001) creditors.push({ name: p, amount: net[p] });
-    if (net[p] < -0.001) debtors.push({ name: p, amount: -net[p] });
+    if (net[p] > EPSILON) creditors.push({ name: p, amount: net[p] });
+    if (net[p] < -EPSILON) debtors.push({ name: p, amount: -net[p] });
   });
   creditors.sort(function(a, b) { return b.amount - a.amount; });
   debtors.sort(function(a, b) { return b.amount - a.amount; });
@@ -249,7 +252,7 @@ function calculate(settlement) {
   while (ci < creditors.length && di < debtors.length) {
     var creditAmt = creditors[ci].amount;
     var debtAmt = debtors[di].amount;
-    var transferAmt = r2(Math.min(creditAmt, debtAmt));
+    var transferAmt = roundCents(Math.min(creditAmt, debtAmt));
 
     transfers.push({
       from: debtors[di].name,
@@ -257,13 +260,13 @@ function calculate(settlement) {
       amount: transferAmt
     });
 
-    creditAmt = r2(creditAmt - transferAmt);
-    debtAmt = r2(debtAmt - transferAmt);
+    creditAmt = roundCents(creditAmt - transferAmt);
+    debtAmt = roundCents(debtAmt - transferAmt);
 
-    if (creditAmt < 0.005) ci++;
+    if (creditAmt < EPSILON) ci++;
     else creditors[ci].amount = creditAmt;
 
-    if (debtAmt < 0.005) di++;
+    if (debtAmt < EPSILON) di++;
     else debtors[di].amount = debtAmt;
   }
 
@@ -279,7 +282,7 @@ function settle(text) {
 // UI
 // =========================================================================
 
-function esc(s) {
+function escapeHtml(s) {
   var div = document.createElement('div');
   div.appendChild(document.createTextNode(s));
   return div.innerHTML;
@@ -319,13 +322,13 @@ function renderExpenses(data) {
   data.expenses.forEach(function(e) {
     var sharers = e.sharedBy ? e.sharedBy.join(', ') : '全员';
     rows += '<tr>' +
-      '<td>' + esc(e.payer) + '</td>' +
-      '<td>' + esc(e.description) + '</td>' +
-      '<td style="font-size:0.78rem;color:#888">' + esc(sharers) + '</td>' +
-      '<td class="num">¥' + e.amount.toFixed(2) + '</td>' +
+      '<td>' + escapeHtml(e.payer) + '</td>' +
+      '<td>' + escapeHtml(e.description) + '</td>' +
+      '<td style="font-size:0.78rem;color:#888">' + escapeHtml(sharers) + '</td>' +
+      '<td class="num">' + formatYuan(e.amount) + '</td>' +
     '</tr>';
   });
-  rows += '<tr class="summary-row"><td colspan="3">合计</td><td class="num">¥' + grandTotal.toFixed(2) + '</td></tr>';
+  rows += '<tr class="summary-row"><td colspan="3">合计</td><td class="num">' + formatYuan(grandTotal) + '</td></tr>';
   table.innerHTML = rows;
 }
 
@@ -338,13 +341,13 @@ function renderBalances(data) {
   }
   var rows = '<tr><th>参与者</th><th class="num">垫付</th><th class="num">应付</th><th class="num">净额</th></tr>';
   balances.forEach(function(b) {
-    var cls = b.net > 0.001 ? 'positive' : (b.net < -0.001 ? 'negative' : '');
-    var sign = b.net > 0.001 ? '+' : '';
+    var cls = b.net > EPSILON ? 'positive' : (b.net < -EPSILON ? 'negative' : '');
+    var sign = b.net > EPSILON ? '+' : '';
     rows += '<tr>' +
-      '<td>' + esc(b.person) + '</td>' +
-      '<td class="num">¥' + b.paid.toFixed(2) + '</td>' +
-      '<td class="num">¥' + b.share.toFixed(2) + '</td>' +
-      '<td class="num ' + cls + '">' + sign + '¥' + b.net.toFixed(2) + '</td>' +
+      '<td>' + escapeHtml(b.person) + '</td>' +
+      '<td class="num">' + formatYuan(b.paid) + '</td>' +
+      '<td class="num">' + formatYuan(b.share) + '</td>' +
+      '<td class="num ' + cls + '">' + sign + formatYuan(b.net) + '</td>' +
     '</tr>';
   });
   table.innerHTML = rows;
@@ -359,10 +362,10 @@ function renderTransfers(data) {
   var html = '';
   data.transfers.forEach(function(t) {
     html += '<div class="transfer-item">' +
-      '<span class="tx-from">' + esc(t.from) + '</span>' +
+      '<span class="tx-from">' + escapeHtml(t.from) + '</span>' +
       '<span class="tx-arrow">→</span>' +
-      '<span class="tx-to">' + esc(t.to) + '</span>' +
-      '<span class="tx-amount">¥' + t.amount.toFixed(2) + '</span>' +
+      '<span class="tx-to">' + escapeHtml(t.to) + '</span>' +
+      '<span class="tx-amount">' + formatYuan(t.amount) + '</span>' +
     '</div>';
   });
   list.innerHTML = html;
