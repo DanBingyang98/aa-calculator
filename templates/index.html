@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AA 算账</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f5f5; color: #333; line-height: 1.6;
+    max-width: 480px; margin: 0 auto; padding: 16px;
+  }
+  h1 { text-align: center; font-size: 1.4rem; margin: 8px 0 16px; color: #1a1a1a; }
+  textarea {
+    width: 100%; height: 200px; padding: 12px; font-size: 0.95rem;
+    border: 1.5px solid #ddd; border-radius: 10px;
+    resize: vertical; font-family: inherit;
+  }
+  textarea:focus { outline: none; border-color: #4a90d9; }
+  button {
+    width: 100%; padding: 12px; margin: 12px 0;
+    background: #4a90d9; color: #fff; font-size: 1rem; font-weight: 600;
+    border: none; border-radius: 10px; cursor: pointer;
+  }
+  button:hover { background: #3a7bc8; }
+  button:active { background: #2e6ab0; }
+
+  .card {
+    background: #fff; border-radius: 12px; padding: 16px;
+    margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .card h2 { font-size: 1.05rem; margin-bottom: 12px; color: #1a1a1a; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { padding: 8px 6px; text-align: left; border-bottom: 1px solid #eee; }
+  th { color: #888; font-weight: 500; font-size: 0.8rem; }
+  td.amount, th.amount { text-align: right; }
+
+  .transfer-item {
+    display: flex; align-items: center; padding: 10px 0;
+    border-bottom: 1px solid #eee;
+  }
+  .transfer-item:last-child { border-bottom: none; }
+  .transfer-from { color: #e74c3c; font-weight: 600; }
+  .transfer-to { color: #27ae60; font-weight: 600; }
+  .transfer-arrow { margin: 0 8px; color: #999; }
+  .transfer-amount { margin-left: auto; font-weight: 700; font-size: 1.05rem; }
+
+  .summary-row { font-weight: 600; border-top: 2px solid #ddd; }
+  .total-positive { color: #27ae60; }
+  .total-negative { color: #e74c3c; }
+
+  .empty { text-align: center; color: #aaa; padding: 20px; }
+  .event-name { font-size: 0.85rem; color: #888; text-align: center; margin-bottom: 8px; }
+
+  #results { display: none; }
+  .help-text {
+    font-size: 0.75rem; color: #aaa; margin-top: 4px; line-height: 1.8;
+  }
+  .help-text code { background: #f0f0f0; padding: 1px 4px; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>📋 AA 算账</h1>
+
+<textarea id="chatInput" placeholder="粘贴微信聊天记录...
+
+格式说明：
+#活动名
+张三
+300 火锅
+李四
+60 奶茶 @张三 @王五"></textarea>
+
+<button onclick="calc()">开始计算</button>
+
+<div id="results">
+  <div class="event-name" id="eventName"></div>
+
+  <div class="card">
+    <h2>📊 花销明细</h2>
+    <table id="expenseTable"></table>
+  </div>
+
+  <div class="card">
+    <h2>👤 每人汇总</h2>
+    <table id="balanceTable"></table>
+  </div>
+
+  <div class="card">
+    <h2>💰 结算转账</h2>
+    <div id="transferList"></div>
+  </div>
+</div>
+
+<script>
+async function calc() {
+  const text = document.getElementById('chatInput').value.trim();
+  if (!text) return;
+
+  try {
+    const resp = await fetch('/api/settle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_text: text }),
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      alert(data.error);
+      return;
+    }
+
+    render(data);
+  } catch (err) {
+    alert('请求失败: ' + err.message);
+  }
+}
+
+function render(data) {
+  document.getElementById('results').style.display = 'block';
+
+  // 活动名
+  const en = document.getElementById('eventName');
+  en.textContent = data.event_name ? data.event_name + ' 结算' : '结算结果';
+
+  // 花销表
+  renderExpenses(data);
+
+  // 每人汇总
+  renderBalances(data);
+
+  // 转账清单
+  renderTransfers(data);
+}
+
+function renderExpenses(data) {
+  const table = document.getElementById('expenseTable');
+
+  if (!data.expenses.length) {
+    table.innerHTML = '<tr><td class="empty" colspan="4">暂无花销记录</td></tr>';
+    return;
+  }
+
+  const grandTotal = data.expenses.reduce((s, e) => s + parseFloat(e.amount), 0);
+
+  let rows = `<tr><th>付款人</th><th>用途</th><th>分摊</th><th class="amount">金额</th></tr>`;
+
+  data.expenses.forEach(e => {
+    const sharers = e.shared_by.length ? e.shared_by.join(', ') : '全员';
+    rows += `<tr>
+      <td>${esc(e.payer)}</td>
+      <td>${esc(e.description)}</td>
+      <td style="font-size:0.78rem;color:#888">${esc(sharers)}</td>
+      <td class="amount">¥${e.amount}</td>
+    </tr>`;
+  });
+
+  rows += `<tr class="summary-row"><td colspan="3">合计</td><td class="amount">¥${grandTotal.toFixed(2)}</td></tr>`;
+
+  table.innerHTML = rows;
+}
+
+function renderBalances(data) {
+  const table = document.getElementById('balanceTable');
+  const balances = data.balances;
+
+  if (!balances || !Object.keys(balances).length) {
+    table.innerHTML = '<tr><td class="empty" colspan="4">暂无参与者</td></tr>';
+    return;
+  }
+
+  let rows = `<tr><th>参与者</th><th class="amount">垫付</th><th class="amount">应付</th><th class="amount">净额</th></tr>`;
+  for (const [person, b] of Object.entries(balances)) {
+    const net = parseFloat(b.net);
+    const netClass = net > 0 ? 'total-positive' : (net < 0 ? 'total-negative' : '');
+    const netSign = net > 0 ? '+' : '';
+    rows += `<tr>
+      <td>${esc(person)}</td>
+      <td class="amount">¥${b.paid}</td>
+      <td class="amount">¥${b.share}</td>
+      <td class="amount ${netClass}">${netSign}¥${b.net}</td>
+    </tr>`;
+  }
+  table.innerHTML = rows;
+}
+
+function renderTransfers(data) {
+  const list = document.getElementById('transferList');
+
+  if (!data.transfers.length) {
+    list.innerHTML = '<div class="empty">无需转账，已结清 🎉</div>';
+    return;
+  }
+
+  let html = '';
+  data.transfers.forEach(t => {
+    html += `<div class="transfer-item">
+      <span class="transfer-from">${esc(t.from)}</span>
+      <span class="transfer-arrow">→</span>
+      <span class="transfer-to">${esc(t.to)}</span>
+      <span class="transfer-amount">¥${t.amount}</span>
+    </div>`;
+  });
+  list.innerHTML = html;
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+
+</body>
+</html>
