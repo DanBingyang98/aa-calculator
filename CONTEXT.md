@@ -1,4 +1,4 @@
-# CONTEXT — AccountBook
+# CONTEXT — aa-calculator
 
 ## Glossary
 
