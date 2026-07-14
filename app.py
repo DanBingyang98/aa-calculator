@@ -35,7 +35,7 @@ def api_settle():
                 'payer': e.payer,
                 'amount': str(e.amount),
                 'description': e.description,
-                'shared_by': e.shared_by if e.shared_by else result.participants,
+                'shared_by': e.shared_by if e.shared_by is not None else None,
             }
             for e in result.expenses
         ],

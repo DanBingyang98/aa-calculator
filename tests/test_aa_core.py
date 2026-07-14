@@ -26,7 +26,7 @@ class TestParseChat:
         assert s.expenses[0].payer == '张三'
         assert s.expenses[0].amount == Decimal('300')
         assert s.expenses[0].description == '火锅'
-        assert s.expenses[0].shared_by == []  # 全员
+        assert s.expenses[0].shared_by is None  # 全员
 
         assert s.expenses[1].payer == '李四'
         assert s.expenses[1].amount == Decimal('60')
@@ -36,7 +36,7 @@ class TestParseChat:
         assert s.expenses[2].payer == '李四'
         assert s.expenses[2].amount == Decimal('100')
         assert s.expenses[2].description == '打车'
-        assert s.expenses[2].shared_by == []
+        assert s.expenses[2].shared_by is None
 
     def test_no_event_name(self):
         text = """张三
@@ -103,7 +103,7 @@ class TestCalculate:
             event_name='测试',
             participants=['张三', '李四'],
             expenses=[
-                Expense('张三', Decimal('100'), '饭', shared_by=[]),
+                Expense('张三', Decimal('100'), '饭', shared_by=None),
             ],
         )
         result = calculate(s)
@@ -119,8 +119,8 @@ class TestCalculate:
             event_name='测试',
             participants=['张三', '李四'],
             expenses=[
-                Expense('张三', Decimal('50'), 'A', shared_by=[]),
-                Expense('李四', Decimal('50'), 'B', shared_by=[]),
+                Expense('张三', Decimal('50'), 'A', shared_by=None),
+                Expense('李四', Decimal('50'), 'B', shared_by=None),
             ],
         )
         result = calculate(s)
@@ -158,7 +158,7 @@ class TestCalculate:
             event_name='',
             participants=['张三', '李四', '王五'],
             expenses=[
-                Expense('张三', Decimal('300'), '全部', shared_by=[]),
+                Expense('张三', Decimal('300'), '全部', shared_by=None),
             ],
         )
         result = calculate(s)
@@ -188,11 +188,11 @@ class TestSettle:
         assert len(result.transfers) > 0
 
         # 手动验算:
-        # 张三: 付300, 分摊: 火锅150(300/2) + 奶茶60(全归张三，因为@张三) = 210
-        #       净额 = 300 - 210 = +90 (应收)
+        # 张三: 付300, 分摊: 火锅150(300/2) + 奶茶60(全归张三，因为@张三) + 打车50(100/2) = 260
+        #       净额 = 300 - 260 = +40 (应收)
         # 李四: 付60+100=160, 分摊: 火锅150 + 打车50(100/2) = 200
         #       净额 = 160 - 200 = -40 (应付)
-        # 李四 → 张三: min(40, 90) = 40
+        # 李四 → 张三: min(40, 40) = 40
         transfers = {(t.from_person, t.to_person): t.amount for t in result.transfers}
         assert ('李四', '张三') in transfers
         # 李四欠的40全转给张三了

@@ -149,7 +149,7 @@ function renderExpenses(data) {
   let rows = `<tr><th>付款人</th><th>用途</th><th>分摊</th><th class="amount">金额</th></tr>`;
 
   data.expenses.forEach(e => {
-    const sharers = e.shared_by.length ? e.shared_by.join(', ') : '全员';
+    const sharers = e.shared_by ? e.shared_by.join(', ') : '全员';
     rows += `<tr>
       <td>${esc(e.payer)}</td>
       <td>${esc(e.description)}</td>
