@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>AA 算账</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f5f5f5; color: #333; line-height: 1.6;
+    max-width: 480px; margin: 0 auto; padding: 16px;
+  }
+  h1 { text-align: center; font-size: 1.4rem; margin: 8px 0 4px; color: #1a1a1a; }
+  .subtitle { text-align: center; font-size: 0.78rem; color: #aaa; margin-bottom: 16px; }
+
+  textarea {
+    width: 100%; height: 200px; padding: 12px; font-size: 0.95rem;
+    border: 1.5px solid #ddd; border-radius: 10px;
+    resize: vertical; font-family: inherit;
+  }
+  textarea:focus { outline: none; border-color: #4a90d9; }
+
+  button {
+    width: 100%; padding: 12px; margin: 12px 0;
+    background: #4a90d9; color: #fff; font-size: 1rem; font-weight: 600;
+    border: none; border-radius: 10px; cursor: pointer;
+    -webkit-appearance: none;
+  }
+  button:hover { background: #3a7bc8; }
+  button:active { background: #2e6ab0; }
+
+  .card {
+    background: #fff; border-radius: 12px; padding: 16px;
+    margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .card h2 { font-size: 1.05rem; margin-bottom: 12px; color: #1a1a1a; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { padding: 8px 6px; text-align: left; border-bottom: 1px solid #eee; }
+  th { color: #888; font-weight: 500; font-size: 0.8rem; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .transfer-item {
+    display: flex; align-items: center; padding: 10px 0;
+    border-bottom: 1px solid #eee;
+  }
+  .transfer-item:last-child { border-bottom: none; }
+  .tx-from { color: #e74c3c; font-weight: 600; }
+  .tx-to   { color: #27ae60; font-weight: 600; }
+  .tx-arrow { margin: 0 8px; color: #999; }
+  .tx-amount { margin-left: auto; font-weight: 700; font-size: 1.05rem; }
+
+  .summary-row { font-weight: 600; border-top: 2px solid #ddd; }
+  .positive { color: #27ae60; }
+  .negative { color: #e74c3c; }
+
+  .empty { text-align: center; color: #aaa; padding: 20px; }
+  .event-name { font-size: 0.85rem; color: #888; text-align: center; margin-bottom: 8px; }
+
+  #results { display: none; }
+
+  .help {
+    font-size: 0.73rem; color: #bbb; margin-top: 6px; line-height: 1.9;
+    background: #fafafa; border-radius: 8px; padding: 10px 12px;
+  }
+  .help code { background: #eee; padding: 1px 5px; border-radius: 3px; font-size: 0.7rem; }
+</style>
+</head>
+<body>
+
+<h1>&#x1F4CB; AA 算账</h1>
+<div class="subtitle">粘贴微信群聊记录 · 自动算账 · 每人只用转一次</div>
+
+<textarea id="chatInput" placeholder="粘贴微信聊天记录...
+
+格式：
+#活动名
+张三
+300 火锅
+李四
+60 奶茶 @张三 @王五
+100 打车"></textarea>
+
+<button id="calcBtn">开始计算</button>
+
+<div id="results">
+  <div class="event-name" id="eventName"></div>
+
+  <div class="card">
+    <h2>&#x1F4CA; 花销明细</h2>
+    <table id="expenseTable"></table>
+  </div>
+
+  <div class="card">
+    <h2>&#x1F464; 每人汇总</h2>
+    <table id="balanceTable"></table>
+  </div>
+
+  <div class="card">
+    <h2>&#x1F4B0; 结算转账</h2>
+    <div id="transferList"></div>
+  </div>
+</div>
+
+<div class="help">
+  <strong>格式说明</strong><br>
+  <code>#活动名</code> 可选<br>
+  <code>姓名</code> 一行 → 下面都是他付的<br>
+  <code>金额 用途</code> 默认全员均摊<br>
+  <code>金额 用途 @某人</code> 指定分摊<br>
+  闲聊行自动忽略
+</div>
+
+<script>
+// =========================================================================
+// Core — AA calculator (JS port of aa_core Python package)
+// =========================================================================
+
+function r2(n) {
+  return Math.round(n * 100) / 100;
+}
+
+// ---- Parser -------------------------------------------------------------
+
+var EXPENSE_RE = /^(\d+(?:\.\d{1,2})?)\s+(\S.*)/;
+var MENTION_RE = /@(\S+)/g;
+
+function parseChat(text) {
+  var lines = text.trim().split('\n')
+    .map(function(l) { return l.trim(); })
+    .filter(function(l) { return l.length > 0; });
+
+  var eventName = '';
+  var entries = [];
+  var expenses = [];
+  var currentSpeaker = '';
+  var participantSet = {};
+
+  lines.forEach(function(line) {
+    // Activity name
+    if (line.startsWith('#')) {
+      eventName = line.slice(1).trim();
+      return;
+    }
+
+    // Expense line: "amount description [@...]"
+    var m = line.match(EXPENSE_RE);
+    if (m) {
+      var amount = r2(parseFloat(m[1]));
+      var rest = m[2];
+
+      // Extract @mentions
+      var mentions = [];
+      var mm;
+      MENTION_RE.lastIndex = 0;
+      while ((mm = MENTION_RE.exec(rest)) !== null) {
+        mentions.push(mm[1]);
+      }
+      var description = rest.replace(MENTION_RE, '').trim();
+
+      if (currentSpeaker) {
+        mentions.forEach(function(name) { participantSet[name] = true; });
+        participantSet[currentSpeaker] = true;
+
+        entries.push({
+          speaker: currentSpeaker,
+          amount: amount,
+          description: description,
+          mentions: mentions
+        });
+        expenses.push({
+          payer: currentSpeaker,
+          amount: amount,
+          description: description,
+          sharedBy: mentions.length > 0 ? mentions : null  // null = everyone
+        });
+      }
+      return;
+    }
+
+    // Otherwise: speaker name
+    currentSpeaker = line;
+    participantSet[currentSpeaker] = true;
+  });
+
+  return {
+    eventName: eventName,
+    participants: Object.keys(participantSet).sort(),
+    entries: entries,
+    expenses: expenses
+  };
+}
+
+// ---- Calculator ---------------------------------------------------------
+
+function calculate(settlement) {
+  var participants = settlement.participants;
+  var expenses = settlement.expenses;
+
+  if (!participants.length || !expenses.length) {
+    settlement.balances = [];
+    settlement.transfers = [];
+    return settlement;
+  }
+
+  // Per-person paid & share
+  var paid = {};
+  var share = {};
+  participants.forEach(function(p) { paid[p] = 0; share[p] = 0; });
+
+  expenses.forEach(function(exp) {
+    paid[exp.payer] += exp.amount;
+
+    var sharers = exp.sharedBy !== null ? exp.sharedBy : participants;
+    var perPerson = r2(exp.amount / sharers.length);
+    sharers.forEach(function(p) {
+      share[p] += perPerson;
+    });
+  });
+
+  // Net balances
+  var net = {};
+  var balances = [];
+  participants.forEach(function(p) {
+    var b = {
+      person: p,
+      paid: r2(paid[p]),
+      share: r2(share[p]),
+      net: r2(paid[p] - share[p])
+    };
+    balances.push(b);
+    net[p] = b.net;
+  });
+  settlement.balances = balances;
+
+  // Greedy matching: creditors (+) vs debtors (-)
+  var creditors = [];
+  var debtors = [];
+  participants.forEach(function(p) {
+    if (net[p] > 0.001) creditors.push({ name: p, amount: net[p] });
+    if (net[p] < -0.001) debtors.push({ name: p, amount: -net[p] });
+  });
+  creditors.sort(function(a, b) { return b.amount - a.amount; });
+  debtors.sort(function(a, b) { return b.amount - a.amount; });
+
+  var transfers = [];
+  var ci = 0, di = 0;
+  while (ci < creditors.length && di < debtors.length) {
+    var creditAmt = creditors[ci].amount;
+    var debtAmt = debtors[di].amount;
+    var transferAmt = r2(Math.min(creditAmt, debtAmt));
+
+    transfers.push({
+      from: debtors[di].name,
+      to: creditors[ci].name,
+      amount: transferAmt
+    });
+
+    creditAmt = r2(creditAmt - transferAmt);
+    debtAmt = r2(debtAmt - transferAmt);
+
+    if (creditAmt < 0.005) ci++;
+    else creditors[ci].amount = creditAmt;
+
+    if (debtAmt < 0.005) di++;
+    else debtors[di].amount = debtAmt;
+  }
+
+  settlement.transfers = transfers;
+  return settlement;
+}
+
+function settle(text) {
+  return calculate(parseChat(text));
+}
+
+// =========================================================================
+// UI
+// =========================================================================
+
+function esc(s) {
+  var div = document.createElement('div');
+  div.appendChild(document.createTextNode(s));
+  return div.innerHTML;
+}
+
+document.getElementById('calcBtn').addEventListener('click', function() {
+  var text = document.getElementById('chatInput').value.trim();
+  if (!text) return;
+
+  var result = settle(text);
+  render(result);
+});
+
+function render(data) {
+  document.getElementById('results').style.display = 'block';
+
+  var en = document.getElementById('eventName');
+  en.textContent = data.eventName ? data.eventName + ' 结算' : '结算结果';
+
+  renderExpenses(data);
+  renderBalances(data);
+  renderTransfers(data);
+
+  // Scroll to results
+  document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+}
+
+function renderExpenses(data) {
+  var table = document.getElementById('expenseTable');
+  if (!data.expenses.length) {
+    table.innerHTML = '<tr><td class="empty" colspan="4">暂无花销记录</td></tr>';
+    return;
+  }
+  var grandTotal = data.expenses.reduce(function(s, e) { return s + e.amount; }, 0);
+
+  var rows = '<tr><th>付款人</th><th>用途</th><th>分摊</th><th class="num">金额</th></tr>';
+  data.expenses.forEach(function(e) {
+    var sharers = e.sharedBy ? e.sharedBy.join(', ') : '全员';
+    rows += '<tr>' +
+      '<td>' + esc(e.payer) + '</td>' +
+      '<td>' + esc(e.description) + '</td>' +
+      '<td style="font-size:0.78rem;color:#888">' + esc(sharers) + '</td>' +
+      '<td class="num">¥' + e.amount.toFixed(2) + '</td>' +
+    '</tr>';
+  });
+  rows += '<tr class="summary-row"><td colspan="3">合计</td><td class="num">¥' + grandTotal.toFixed(2) + '</td></tr>';
+  table.innerHTML = rows;
+}
+
+function renderBalances(data) {
+  var table = document.getElementById('balanceTable');
+  var balances = data.balances;
+  if (!balances || !balances.length) {
+    table.innerHTML = '<tr><td class="empty" colspan="4">暂无参与者</td></tr>';
+    return;
+  }
+  var rows = '<tr><th>参与者</th><th class="num">垫付</th><th class="num">应付</th><th class="num">净额</th></tr>';
+  balances.forEach(function(b) {
+    var cls = b.net > 0.001 ? 'positive' : (b.net < -0.001 ? 'negative' : '');
+    var sign = b.net > 0.001 ? '+' : '';
+    rows += '<tr>' +
+      '<td>' + esc(b.person) + '</td>' +
+      '<td class="num">¥' + b.paid.toFixed(2) + '</td>' +
+      '<td class="num">¥' + b.share.toFixed(2) + '</td>' +
+      '<td class="num ' + cls + '">' + sign + '¥' + b.net.toFixed(2) + '</td>' +
+    '</tr>';
+  });
+  table.innerHTML = rows;
+}
+
+function renderTransfers(data) {
+  var list = document.getElementById('transferList');
+  if (!data.transfers.length) {
+    list.innerHTML = '<div class="empty">无需转账，已结清 &#x1F389;</div>';
+    return;
+  }
+  var html = '';
+  data.transfers.forEach(function(t) {
+    html += '<div class="transfer-item">' +
+      '<span class="tx-from">' + esc(t.from) + '</span>' +
+      '<span class="tx-arrow">→</span>' +
+      '<span class="tx-to">' + esc(t.to) + '</span>' +
+      '<span class="tx-amount">¥' + t.amount.toFixed(2) + '</span>' +
+    '</div>';
+  });
+  list.innerHTML = html;
+}
+</script>
+</body>
+</html>
